@@ -19,7 +19,7 @@ warnings.filterwarnings('ignore')
 pd.set_option('display.max_rows',500)
 pd.set_option('display.max_columns',500)
 pd.set_option('display.width',1000)
-
+# 卡尔曼平滑
 def kalman_smooth(x):
 
     series = [x['sales_0'], x['sales_1'], x['sales_2'], x['sales_3'], x['sales_4'],
@@ -30,41 +30,49 @@ def kalman_smooth(x):
     return state_means.ravel().tolist()
 
 def train_model():
+#     df销量数据
     df = pd.read_csv('fusai_data/goodsale_modified1.csv')
     df['data_date'] = pd.to_datetime(df['data_date'], format='%Y-%m-%d')
+#     修改过的sub表
     sub = pd.read_csv('fusai_data/submit_example_2.csv')
+#     商品信息表
     info = pd.read_csv('fusai_data/goodsinfo.csv')
+#     商品sku和goods对应
     relation = pd.read_csv('fusai_data/goods_sku_relation.csv')
     relation = pd.merge(relation, info, on='goods_id')
-
+# 限量数据价格数字化
     df['goods_price'] = df['goods_price'].map(lambda x: x.replace(',', '') if type(x) == np.str else x)
     df['goods_price'] = pd.to_numeric(df['goods_price'])
     df['orginal_shop_price'] = df['orginal_shop_price'].map(lambda x: x.replace(',', '') if type(x) == np.str else x)
     df['orginal_shop_price'] = pd.to_numeric(df['orginal_shop_price'])
 
-
+# drop为商品开售日期表
     daily = pd.read_csv('fusai_data/daily_modified1.csv')
     daily['data_date'] = pd.to_datetime(daily['data_date'], format='%Y-%m-%d')
     droped = daily.drop_duplicates(subset='goods_id')
     droped['open_date'] = droped.apply(lambda x: x['data_date'] - datetime.timedelta(x['onsale_days']), axis=1)
-
+# group商品每周总销量
     grouped = df.groupby(['sku_id', 'own_week'])['goods_num'].sum().reset_index()
+#     商品每周销量透视表，索引：sku，列名：周数，值：销量
     pivot = grouped.pivot(index='sku_id', columns='own_week', values='goods_num')
+#     重命名pivot列名：为sales+周数
     new_columns = {}
     for i in list(pivot.columns):
         new_columns[i] = 'sales_' + str(i)
     pivot.rename(columns=new_columns, inplace=True)
     pivot.fillna(0, inplace=True)
 
-
+# grouped_daily商品每周点击量总和
     grouped_daily = daily.groupby(['goods_id', 'own_week'])['goods_click'].sum().reset_index()
+#    每周点击量总和透视表
     pivot_daily = grouped_daily.pivot(index='goods_id', columns='own_week', values='goods_click')
     new_columns = {}
+#     重命名透视表列名goods_click+周数
     for i in list(pivot_daily.columns):
         new_columns[i] = 'goods_click_' + str(i)
     pivot_daily.rename(columns=new_columns, inplace=True)
     pivot_daily.fillna(0, inplace=True)
-
+# 商品架构次数每周总量，列名cart——click，pivot_daily_cart表
     grouped_daily_cart = daily.groupby(['goods_id', 'own_week'])['cart_click'].sum().reset_index()
     pivot_daily_cart = grouped_daily_cart.pivot(index='goods_id', columns='own_week', values='cart_click')
     new_columns = {}
@@ -72,7 +80,7 @@ def train_model():
         new_columns[i] = 'cart_click_' + str(i)
     pivot_daily_cart.rename(columns=new_columns, inplace=True)
     pivot_daily_cart.fillna(0, inplace=True)
-
+# 商品收藏次数每周总量，列名favorites——click，pivot_daily_fav表
     grouped_daily_fav = daily.groupby(['goods_id', 'own_week'])['favorites_click'].sum().reset_index()
     pivot_daily_fav = grouped_daily_fav.pivot(index='goods_id', columns='own_week', values='favorites_click')
     new_columns = {}
@@ -80,7 +88,7 @@ def train_model():
         new_columns[i] = 'favorites_click_' + str(i)
     pivot_daily_fav.rename(columns=new_columns, inplace=True)
     pivot_daily_fav.fillna(0, inplace=True)
-
+# 商品购买次数每周总量，列名seles—uv+周数，pivot_daily_fav表
     grouped_daily_uv = daily.groupby(['goods_id', 'own_week'])['sales_uv'].sum().reset_index()
     pivot_daily_uv = grouped_daily_uv.pivot(index='goods_id', columns='own_week', values='sales_uv')
     new_columns = {}
@@ -88,33 +96,34 @@ def train_model():
         new_columns[i] = 'sales_uv_' + str(i)
     pivot_daily_uv.rename(columns=new_columns, inplace=True)
     pivot_daily_uv.fillna(0, inplace=True)
-
+# sub合并以上各商品每周数据表现表，分别按周以销量，点击数，收藏数量等，列名为前缀加周数
     sub = pd.merge(sub, pivot, on='sku_id', how='left')
     sub = pd.merge(sub, relation, on='sku_id', how='left')
     sub = pd.merge(sub, pivot_daily, on='goods_id', how='left')
     sub = pd.merge(sub, pivot_daily_cart, on='goods_id', how='left')
     sub = pd.merge(sub, pivot_daily_fav, on='goods_id', how='left')
     sub = pd.merge(sub, pivot_daily_uv, on='goods_id', how='left')
-
+# sub合并商品开售日期，onsale_train商品开售日期到训练集截止日期天数，onsale_test商品开售日期到预测集截止日期
     sub = pd.merge(sub, droped[['goods_id', 'open_date']], on='goods_id', how='left')
     sub['onsale_train'] = sub['open_date'].map(lambda x: (datetime.datetime(2018, 3, 16) - x).days)
     sub['onsale_test'] = sub['open_date'].map(lambda x: (datetime.datetime(2018, 5, 7) - x).days)
+#     sub商品属性名合并
     sub['concat'] = sub.apply(lambda x: str(x['cat_level1_id']) +
                                         '_' + str(x['cat_level2_id']) + '_' + str(x['cat_level3_id'])
                                         + '_' + str(x['cat_level4_id']) + '_' + str(x['cat_level5_id']), axis=1)
 
-
+# 商品的平均价格
     raw_price = df.groupby('sku_id')['orginal_shop_price'].mean().reset_index()
     real_price = df.groupby('sku_id')['goods_price'].mean().reset_index()
 
-
+# 合并到sub表
     sub = pd.merge(sub, raw_price, on='sku_id', how='left')
     sub = pd.merge(sub, real_price, on='sku_id', how='left')
-
+# 商品折扣
     sub['discount'] = sub['orginal_shop_price'] - sub['goods_price']
 
     print('------------load_data-----------------')
-
+# 卡尔曼平滑
     sub['smooth'] = sub.apply(lambda x: kalman_smooth(x), axis=1)
     for i in range(15):
         sub['sales_smo_'+str(i)] = sub.apply(lambda x: x['smooth'][i], axis=1)
@@ -288,18 +297,25 @@ def train_model():
 
 def pre_process():
     sale = pd.read_csv('fusai_data/goodsale.csv')
+#     销售数据表
     sub = pd.read_csv('fusai_data/submit_example_2.csv')
+#     提交表
+# 商品表现数据表
     daily = pd.read_csv('fusai_data/goodsdaily.csv')
+#     skuid和goodsid对应表
     relation = pd.read_csv('fusai_data/goods_sku_relation.csv')
-
+# 转换时间格式、距离最后一天的周数字段（own——week）
     sale['data_date'] = pd.to_datetime(sale['data_date'], format='%Y%m%d')
     sale['own_week'] = sale['data_date'].map(lambda x: (datetime.datetime(2018, 3, 16)-x).days//7)
     sale.to_csv('fusai_data/goodsale_modified1.csv', index=False)
 
     print('-----------------生成sale数据ok----------------')
+#    sku对应的good_id，一个sku对应多个goods 
     sub = pd.merge(sub, relation, on='sku_id', how='left')
+#     取出表现数据表在sub中存在的good_id的物品的部分
     part = daily[daily['goods_id'].isin(sub['goods_id'].unique())]
     part['data_date'] = pd.to_datetime(part['data_date'], format='%Y%m%d')
+#     part同sale操作
     part['own_week'] = part['data_date'].map(lambda x: (datetime.datetime(2018, 3, 16) - x).days//7)
     part.to_csv('fusai_data/daily_modified1.csv', index=False)
     print('-----------------生成daily数据ok----------------')
